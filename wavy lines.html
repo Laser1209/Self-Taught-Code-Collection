@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+  
+<head>
+  <meta charset="UTF-8">
+  <title>wavy lines</title>
+  <style>
+    body {
+      width: 100vw;
+      height: 100vh;
+      margin: 0;
+      padding: 0;
+      background: #f7f7f7;
+    }
+
+    a-waves {
+      position: absolute;
+      top: 0;
+      left: 0;
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    a-waves svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    a-waves svg path {
+      fill: none;
+      stroke: #171717;
+      stroke-width: 1px;
+    }
+  </style>
+</head>
+
+<body>
+  <a-waves>
+    <svg></svg>
+  </a-waves>
+</body>
+
+<script>
+  // ========== 内嵌经典版Perlin Noise实现（无外部依赖、无存储访问） ==========
+  var PerlinNoise = function(seed) {
+    if (seed === undefined) seed = Math.random();
+    this.seed = seed;
+    this.p = [];
+    for (var i = 0; i < 256; i++) {
+      this.p[i] = Math.floor(Math.random() * 256);
+    }
+    for (i = 0; i < 256; i++) {
+      this.p[256 + i] = this.p[i];
+    }
+  };
+
+  PerlinNoise.prototype.fade = function(t) {
+    return t * t * t * (t * (t * 6 - 15) + 10);
+  };
+
+  PerlinNoise.prototype.lerp = function(a, b, t) {
+    return a + t * (b - a);
+  };
+
+  PerlinNoise.prototype.grad = function(hash, x, y, z) {
+    var h = hash & 15;
+    var u = h < 8 ? x : y,
+        v = h < 4 ? y : h === 12 || h === 14 ? x : z;
+    return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
+  };
+
+  PerlinNoise.prototype.perlin2 = function(x, y) {
+    var X = Math.floor(x) & 255,
+        Y = Math.floor(y) & 255;
+    x -= Math.floor(x);
+    y -= Math.floor(y);
+    var u = this.fade(x),
+        v = this.fade(y);
+    var A = this.p[X] + Y,
+        AA = this.p[A],
+        AB = this.p[A + 1],
+        B = this.p[X + 1] + Y,
+        BA = this.p[B],
+        BB = this.p[B + 1];
+
+    return this.lerp(
+      this.lerp(this.grad(this.p[AA], x, y, 0), this.grad(this.p[BA], x - 1, y, 0), u),
+      this.lerp(this.grad(this.p[AB], x, y - 1, 0), this.grad(this.p[BB], x - 1, y - 1, 0), u),
+      v
+    );
+  };
+  // ========== 结束：内嵌Perlin Noise实现 ==========
+
+  class AWaves extends HTMLElement {
+    connectedCallback() {
+      this.svg = this.querySelector('svg')
+      this.mouse = {
+        x: 0,
+        y: 0,
+        lx: 0,
+        ly: 0,
+        sx: 0,
+        sy: 0,
+        v: 0,
+        vs: 0,
+        a: 0,
+      }
+      this.lines = []
+      this.paths = []
+      // 内嵌PerlinNoise
+      this.noise = new PerlinNoise(Math.random())
+
+      this.bindEvents()
+      this.setSize()
+      this.setLines()
+
+      requestAnimationFrame(this.tick.bind(this))
+    }
+    bindEvents() {
+      window.addEventListener('resize', () => {
+        this.setSize()
+        this.setLines()
+      })
+      window.addEventListener('mousemove', (e) => {
+        this.updateMousePosition(e.pageX, e.pageY)
+      })
+      this.addEventListener('touchmove', (e) => {
+        e.preventDefault()
+        this.updateMousePosition(e.touches[0].clientX, e.touches[0].clientY)
+      })
+    }
+    setSize() {
+      this.bounding = this.getBoundingClientRect()
+      this.svg.style.width = `${this.bounding.width}px`
+      this.svg.style.height = `${this.bounding.height}px`
+    }
+    setLines() {
+      const { width, height } = this.bounding
+
+      this.lines = []
+      this.paths.forEach((path) => {
+        path.remove()
+      })
+      this.paths = []
+
+      const xGap = 4
+      const yGap = 4
+
+      const oWidth = width + 200
+      const oHeight = height + 30
+
+      const totalLines = Math.ceil(oWidth / xGap)
+      const totalPoints = Math.ceil(oHeight / yGap)
+
+      const xStart = (width - xGap * totalLines) / 2
+      const yStart = (height - yGap * totalPoints) / 2
+
+      for (let i = 0; i <= totalLines; i++) {
+        const points = []
+        for (let j = 0; j <= totalPoints; j++) {
+          const point = {
+            x: xStart + xGap * i,
+            y: yStart + yGap * j,
+            cursor: { x: 0, y: 0, vx: 0, vy: 0 },
+            // 修复：初始化wave属性，避免undefined报错
+            wave: { x: 0, y: 0 }
+          }
+          points.push(point)
+        }
+        this.lines.push(points)
+
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+        this.svg.appendChild(path)
+        this.paths.push(path)
+      }
+    }
+    updateMousePosition(x, y) {
+      const { mouse } = this
+      mouse.x = x - this.bounding.left
+      mouse.y = y - this.bounding.top + window.scrollY
+    }
+    movePoints(time) {
+      const { lines, mouse } = this
+
+      lines.forEach((points) => {
+        points.forEach((p, i) => {
+          // -------------------------- 柏林噪音核心代码（修复版） --------------------------
+          const move =
+            // 修复：调用this.noise（内嵌的PerlinNoise）
+            this.noise.perlin2(
+                (p.x + time * 0.0125) * 0.002,
+                (p.y + time * 0.005) * 0.0015
+            ) * 18
+          // 适度降低幅度，避免线条偏移出可视区域
+          p.wave.x = Math.cos(move) * 16
+          p.wave.y = Math.sin(move) * 8
+          // ------------------------------------------------------------------------------
+
+          const dx = p.x - mouse.sx
+          const dy = p.y - mouse.sy
+          const d = Math.hypot(dx, dy)
+          const l = Math.max(175, mouse.vs)
+
+          if (d < l) {
+            const f = 1 - d / l
+            p.cursor.vx += Math.cos(mouse.a) * f * mouse.vs * 0.08
+            p.cursor.vy += Math.sin(mouse.a) * f * mouse.vs * 0.08
+          }
+
+          p.cursor.vx += (0 - p.cursor.x) * 0.002
+          p.cursor.vy += (0 - p.cursor.y) * 0.002
+
+          p.cursor.vx *= 0.98
+          p.cursor.vy *= 0.98
+
+          p.cursor.x += p.cursor.vx * 2
+          p.cursor.y += p.cursor.vy * 2
+
+          p.cursor.x = Math.min(100, Math.max(-100, p.cursor.x))
+          p.cursor.y = Math.min(100, Math.max(-100, p.cursor.y))
+        })
+      })
+    }
+    moved(point, withCursorForce = true) {
+      const coords = {
+        x: point.x + point.wave.x + (withCursorForce ? point.cursor.x : 0),
+        y: point.y + point.wave.y + (withCursorForce ? point.cursor.y : 0),
+      }
+
+      coords.x = Math.round(coords.x * 10) / 10
+      coords.y = Math.round(coords.y * 10) / 10
+
+      return coords
+    }
+    drawLines() {
+      const { lines, moved, paths } = this
+
+      lines.forEach((points, lIndex) => {
+        let p1 = moved(points[0], false)
+        let d = `M ${p1.x} ${p1.y}`
+
+        points.forEach((p, pIndex) => {
+          const isLast = pIndex === points.length - 1
+          p = moved(p, !isLast)
+          d += `L ${p.x} ${p.y}`
+        })
+
+        paths[lIndex].setAttribute('d', d)
+      })
+    }
+    tick(time) {
+      const { mouse } = this
+
+      mouse.sx += (mouse.x - mouse.sx) * 0.1
+      mouse.sy += (mouse.y - mouse.sy) * 0.1
+
+      const dx = mouse.x - mouse.lx
+      const dy = mouse.y - mouse.ly
+      const d = Math.hypot(dx, dy)
+
+      mouse.v = d
+      mouse.vs += (d - mouse.vs) * 0.1
+      mouse.vs = Math.min(100, mouse.vs)
+
+      mouse.lx = mouse.x
+      mouse.ly = mouse.y
+
+      mouse.a = Math.atan2(dy, dx)
+
+      this.movePoints(time)
+      this.drawLines()
+
+      requestAnimationFrame(this.tick.bind(this))
+    }
+  }
+
+  customElements.define('a-waves', AWaves)
+</script>
+
+</html>
